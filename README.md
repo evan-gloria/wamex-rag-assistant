@@ -6,6 +6,10 @@ This project demonstrates a production-ready approach to Generative AI, focusing
 
 It serves as the unstructured AI counterpart to structured big data processing pipelines (such as PySpark/Apache Iceberg data lakehouses), proving out end-to-end data lifecycle management.
 
+### 📽️ Project Overview (Slide Deck)
+A 6-slide overview covering system architecture, automated recovery logs, and retrieval tuning results ($k=20$):
+👉 **[Download the Architecture & Demo Slides (PDF)](docs/WAMEX-RAG-Assistant-Deck.pdf)**
+
 ## 🏗️ Architecture & Pipeline
 
 ![System Architecture](docs/WAMEX-RAG-Poc-Architecture.png)
@@ -15,7 +19,7 @@ It serves as the unstructured AI counterpart to structured big data processing p
 * **Trigger & Decoupling:** Native `s3:ObjectCreated:*` events automatically notify an Amazon SQS Main Queue the moment a raw geological report (PDF) is uploaded. This asynchronous decoupling acts as a shock absorber to prevent downstream API throttling.
 * **Compute & Chunking:** An AWS Lambda function (Python 3.11 / ARM64) actively polls the SQS queue, intercepting the file and utilizing LangChain to parse and logically chunk the unstructured text for optimal retrieval. Failed messages are automatically redriven, and permanently corrupted files are routed to a Dead Letter Queue (DLQ) to ensure zero data loss.
 * **Embedding Generation:** The Lambda invokes Amazon Bedrock (Titan Embeddings) to convert the text chunks into high-dimensional vector representations.
-* **Stateless Vector Storage:** To maintain a $0.00 scale-to-zero cost model, the existing FAISS index is dynamically downloaded from the S3 Index bucket, merged with the new document vectors in-memory, and safely overwritten back to S3.
+* **Stateless Vector Storage:** To maintain a scale-to-zero cost model, the existing FAISS index is dynamically downloaded from the S3 Index bucket, merged with the new document vectors in-memory, and safely overwritten back to S3.
 
 2. Retrieval & Generation (🟢 The "Reader")
 * **Frontend:** A pure Python Streamlit application that provides a conversational interface alongside a "NotebookLM-style" sidebar for dynamic document selection (Metadata Filtering).
@@ -82,6 +86,16 @@ This architecture is highly optimized for cost and speed. Below is a snapshot of
 
 ![CloudWatch Execution Logs](docs/screenshot_cloudwatch_logs.png)
 
+#### 🛡️ Resiliency & Error Handling (SQS Redrive)
+During high-volume ingestion, the pipeline may encounter `ThrottlingException` errors from the Amazon Bedrock API. To handle this, I implemented an SQS-based decoupling layer that automatically manages retries.
+
+| ❌ 1. Throttling Failure | ✅ 2. Automated Recovery |
+| :--- | :--- |
+| ![Bedrock Throttling Error](docs/screenshot_throttling_error.png) | ![Successful Retry](docs/screenshot_retry_success.png) |
+
+* **Self-Healing:** The first attempt (left) failed due to API rate limits. SQS held the message and applied a backoff. [cite_start]The second attempt (right) successfully processed the same file (`A143696_v1_REPORT.pdf`) without manual intervention. 
+* [cite_start]**Observability:** This granular logging allows for clear traceability of document processing across multiple Lambda invocations.
+
 * **Execution Speed:** Takes under 5 seconds to fully chunk, embed, and index a document.
 * **Lean Compute:** Max memory used is ~203 MB, keeping the serverless footprint incredibly cost-effective.
 * **Resiliency:** The SQS integration successfully catches Bedrock API rate limits (`ThrottlingException`) and automatically redrives the message, ensuring zero data loss during high-volume uploads.
@@ -121,6 +135,19 @@ To test the grounding of the system, try the following queries:
 * **FinOps:** Scale-to-zero model with no fixed monthly costs.
 
 For detailed setup instructions, including AWS SSO authentication and Amazon Bedrock EULA acceptance, see the Infrastructure Setup Guide.
+
+## 🧠 Lessons Learned & Architectural Trade-offs
+1. Designing for Asynchronous Resiliency
+    * **Situation** Initially, the pipeline triggered Lambda directly from S3. While simpler, this created a "fragile" link when processing batches of files, as Amazon Bedrock's embedding APIs have strict concurrency limits.
+    * **The Lesson:** Decoupling with Amazon SQS is mandatory for production-grade GenAI. It allowed the system to catch `ThrottlingExceptions`, wait for the API to cool-down, and retry automatically without losing a single document.
+
+2. Strategic Infrastructure: Scale-to-Zero vs. Enterprise Managed Services
+    * **Situation** During the design phase, I evaluated **Amazon OpenSearch Serverless** for vector storage. While OpenSearch is the clear choice for global enterprise solutions requiring multi-tenancy and million-document scale, its minimum *always-on* cost footprint was over-engineered for this specific geological data PoC.
+    * **The Lesson:** Choosing the right tool is a balance of Unit Economics and Operational Complexity. By engineering a stateless S3-backed FAISS index, I achieved sub-5 second performance with a $\$0.00$ *idle cost*. This demonstrates the ability to deliver high-performance AI prototypes without the immediate overhead of managed clusters, while maintaining a clear migration path to OpenSearch as the corpus scales.
+
+3. Balancing Recall vs. Precision (Tuning $k$ and Chunking) 
+    * **Situation** In early testing, using a standard $k=5$ (retrieving only the top 5 chunks) led to incomplete answers, especially for dense geological reports where relevant data is spread across multiple tables and sections.
+    * **The Lesson:** *One size fits all* retrieval fails for complex domain data. I found that increasing retrieval to $k=20$, combined with specific overlapping chunks ($1000$ tokens / $150$ overlap), significantly improved the LLM's ability to synthesize assay results and drill-hole coordinates without losing context between segments. 
 
 ## 🌍 Data Provenance & Disclaimer
 These unstructured geological reports were publicly sourced from the [Western Australia DMIRS Data and Software Centre (DASC)](https://dasc.dmirs.wa.gov.au/).
