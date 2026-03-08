@@ -18,20 +18,27 @@ A 6-slide overview covering system architecture, automated recovery logs, and re
 1. Event-Driven Ingestion (🔵 The "Writer")
 * **Trigger & Decoupling:** Native `s3:ObjectCreated:*` events automatically notify an Amazon SQS Main Queue the moment a raw geological report (PDF) is uploaded. This asynchronous decoupling acts as a shock absorber to prevent downstream API throttling.
 * **Compute & Chunking:** An AWS Lambda function (Python 3.11 / ARM64) actively polls the SQS queue, intercepting the file and utilizing LangChain to parse and logically chunk the unstructured text for optimal retrieval. Failed messages are automatically redriven, and permanently corrupted files are routed to a Dead Letter Queue (DLQ) to ensure zero data loss.
-* **Embedding Generation:** The Lambda invokes Amazon Bedrock (Titan Embeddings) to convert the text chunks into high-dimensional vector representations.
+* **Embedding Generation:** The AWS Lambda invokes Amazon Bedrock (Titan Embeddings) to convert the text chunks into high-dimensional vector representations.
 * **Stateless Vector Storage:** To maintain a scale-to-zero cost model, the existing FAISS index is dynamically downloaded from the S3 Index bucket, merged with the new document vectors in-memory, and safely overwritten back to S3.
 
 2. Retrieval & Generation (🟢 The "Reader")
 * **Frontend:** A pure Python Streamlit application that provides a conversational interface alongside a "NotebookLM-style" sidebar for dynamic document selection (Metadata Filtering).
 * **API Layer:** An Amazon API Gateway exposes a secure, RESTful `POST` endpoint to bridge the Streamlit UI with the backend compute.
-* **Vector Similarity Search:** A dedicated Querying Lambda function pulls the persistent FAISS index from S3, filters the search space based on the user's sidebar selections, and retrieves the most mathematically relevant text chunks.
-* **Grounded Synthesis:** The Lambda constructs an augmented prompt (User Query + Retrieved Context) and streams it to Amazon Bedrock (Anthropic Claude 3 Haiku) to generate a highly accurate, hallucination-free geological insight.
+* **Vector Similarity Search:** A dedicated Querying AWS Lambda function pulls the persistent FAISS index from S3, filters the search space based on the user's sidebar selections, and retrieves the most mathematically relevant text chunks.
+* **Grounded Synthesis:** The AWS Lambda constructs an augmented prompt (User Query + Retrieved Context) and streams it to Amazon Bedrock (Anthropic Claude 3 Haiku) to generate a highly accurate, hallucination-free geological insight.
 
 ## 💡 Key Engineering Decisions
-- **Event Decoupling & Resiliency:** Inserted an SQS polling layer between S3 and Lambda. During high-volume ingestion, text chunking can easily overwhelm Bedrock's embedding API limits. SQS gracefully catches `ThrottlingExceptions` and applies an automated backoff-and-retry mechanism, ensuring the pipeline self-heals without manual intervention.
+- **Event Decoupling & Resiliency:** Inserted an SQS polling layer between S3 and AWS Lambda. During high-volume ingestion, text chunking can easily overwhelm Bedrock's embedding API limits. SQS gracefully catches `ThrottlingExceptions` and applies an automated backoff-and-retry mechanism, ensuring the pipeline self-heals without manual intervention.
 - **FinOps Optimization:** Opted for a serverless S3/FAISS architecture over Amazon OpenSearch Serverless, completely eliminating hourly idle database costs.
 - **Metadata Filtering:** Implemented source-level tagging during ingestion, allowing the UI to dynamically restrict the LLM's search space to user-selected documents, ensuring perfect data provenance.
-- **Stateless Merging:** Designed the ingestion Lambda to intelligently download, merge, and re-upload the FAISS index, solving the classic serverless "overwrite" race condition.
+- **Stateless Merging:** Designed the ingestion AWS Lambda to intelligently download, merge, and re-upload the FAISS index, solving the classic serverless "overwrite" race condition.
+
+## 🛡️ Enterprise Security Posture (PoC Considerations): 
+While this is a Proof of Concept, several foundational security measures were integrated by design to mitigate common Generative AI vulnerabilities (like Prompt Injection):
+- **IAM Least Privilege:** The AWS Lambda execution roles are strictly scoped. The Query Lambda only possesses Read-Only access to the S3 FAISS index and Amazon Bedrock, ensuring the LLM cannot execute malicious infrastructure commands.
+- **Context Bounding (Prompt Engineering):** The system prompt strictly anchors the Claude 3 Haiku model to the retrieved geological context. If a user attempts a prompt injection or asks out-of-domain questions, the model is instructed to safely reject the prompt.
+- **Frontend Sanitization:** Streamlit natively escapes HTML and JavaScript inputs, neutralizing Cross-Site Scripting (XSS) attempts before they reach the backend processing logic.
+- **Production Migration Path:** For a production deployment, this architecture is designed to seamlessly integrate with Guardrails for Amazon Bedrock to provide an API-level firewall for PII masking and prompt injection blocking.
  
 ## 🚀 Enterprise Scaling & Day-Two Operations Roadmap
 This architecture is intentionally designed as a lightweight, scale-to-zero Proof of Concept. For a production-grade deployment serving a global enterprise, I would introduce the following enhancements:
@@ -56,8 +63,8 @@ wamex-rag-assistant/
 ├── frontend/
 │   └── app.py            # Streamlit UI with S3 dynamic sidebar
 ├── src/
-│   ├── api/              # Lambda: API Gateway integration & Claude 3 generation
-│   └── ingestion/        # Lambda: S3 event trigger, parsing, & FAISS merging
+│   ├── api/              # AWS Lambda: API Gateway integration & Claude 3 generation
+│   └── ingestion/        # AWS Lambda: S3 event trigger, parsing, & FAISS merging
 ├── docs/                 # Infrastructure setup and deployment playbooks
 ├── pyproject.toml        # Poetry dependency management
 └── template.yaml         # AWS SAM CloudFormation blueprint
@@ -82,7 +89,7 @@ When a geological report is uploaded to the raw data bucket, an AWS Lambda funct
 *Left: The raw WAMEX PDF reports. Right: The persistent FAISS vector store generated by the ingestion pipeline.*
 
 #### ⚡ Performance & Observability
-This architecture is highly optimized for cost and speed. Below is a snapshot of the AWS CloudWatch logs demonstrating the event-driven Lambda function successfully processing a geological report, generating Bedrock embeddings, and merging the FAISS index.
+This architecture is highly optimized for cost and speed. Below is a snapshot of the AWS CloudWatch logs demonstrating the event-driven AWS Lambda function successfully processing a geological report, generating Bedrock embeddings, and merging the FAISS index.
 
 ![CloudWatch Execution Logs](docs/screenshot_cloudwatch_logs.png)
 
@@ -94,7 +101,7 @@ During high-volume ingestion, the pipeline may encounter `ThrottlingException` e
 | ![Bedrock Throttling Error](docs/screenshot_throttling_error.png) | ![Successful Retry](docs/screenshot_retry_success.png) |
 
 * **Self-Healing:** The first attempt (left) failed due to API rate limits. SQS held the message and applied a backoff. [cite_start]The second attempt (right) successfully processed the same file (`A143696_v1_REPORT.pdf`) without manual intervention. 
-* [cite_start]**Observability:** This granular logging allows for clear traceability of document processing across multiple Lambda invocations.
+* [cite_start]**Observability:** This granular logging allows for clear traceability of document processing across multiple AWS Lambda invocations.
 
 * **Execution Speed:** Takes under 5 seconds to fully chunk, embed, and index a document.
 * **Lean Compute:** Max memory used is ~203 MB, keeping the serverless footprint incredibly cost-effective.
@@ -138,7 +145,7 @@ For detailed setup instructions, including AWS SSO authentication and Amazon Bed
 
 ## 🧠 Lessons Learned & Architectural Trade-offs
 1. Designing for Asynchronous Resiliency
-    * **Situation** Initially, the pipeline triggered Lambda directly from S3. While simpler, this created a "fragile" link when processing batches of files, as Amazon Bedrock's embedding APIs have strict concurrency limits.
+    * **Situation** Initially, the pipeline triggered AWS Lambda directly from S3. While simpler, this created a "fragile" link when processing batches of files, as Amazon Bedrock's embedding APIs have strict concurrency limits.
     * **The Lesson:** Decoupling with Amazon SQS is mandatory for production-grade GenAI. It allowed the system to catch `ThrottlingExceptions`, wait for the API to cool-down, and retry automatically without losing a single document.
 
 2. Strategic Infrastructure: Scale-to-Zero vs. Enterprise Managed Services
