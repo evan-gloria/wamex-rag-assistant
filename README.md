@@ -12,8 +12,8 @@ It serves as the unstructured AI counterpart to structured big data processing p
 *High-level System Architecture*
 
 1. Event-Driven Ingestion (🔵 The "Writer")
-* **Trigger:** Native `s3:ObjectCreated:*` events automatically invoke the pipeline the moment a raw geological report (PDF) is uploaded.
-* **Compute:** An AWS Lambda function (Python 3.11 / ARM64) intercepts the file, utilizing LangChain to parse and logically chunk the unstructured text for optimal retrieval.
+* **Trigger & Decoupling:** Native `s3:ObjectCreated:*` events automatically notify an Amazon SQS Main Queue the moment a raw geological report (PDF) is uploaded. This asynchronous decoupling acts as a shock absorber to prevent downstream API throttling.
+* **Compute & Chunking:** An AWS Lambda function (Python 3.11 / ARM64) actively polls the SQS queue, intercepting the file and utilizing LangChain to parse and logically chunk the unstructured text for optimal retrieval. Failed messages are automatically redriven, and permanently corrupted files are routed to a Dead Letter Queue (DLQ) to ensure zero data loss.
 * **Embedding Generation:** The Lambda invokes Amazon Bedrock (Titan Embeddings) to convert the text chunks into high-dimensional vector representations.
 * **Stateless Vector Storage:** To maintain a $0.00 scale-to-zero cost model, the existing FAISS index is dynamically downloaded from the S3 Index bucket, merged with the new document vectors in-memory, and safely overwritten back to S3.
 
@@ -24,17 +24,26 @@ It serves as the unstructured AI counterpart to structured big data processing p
 * **Grounded Synthesis:** The Lambda constructs an augmented prompt (User Query + Retrieved Context) and streams it to Amazon Bedrock (Anthropic Claude 3 Haiku) to generate a highly accurate, hallucination-free geological insight.
 
 ## 💡 Key Engineering Decisions
-- FinOps Optimization: Opted for a serverless S3/FAISS architecture over Amazon OpenSearch Serverless, completely eliminating hourly idle database costs.
-- Metadata Filtering: Implemented source-level tagging during ingestion, allowing the UI to dynamically restrict the LLM's search space to user-selected documents, ensuring perfect data provenance.
-- Stateless Merging: Designed the ingestion Lambda to intelligently download, merge, and re-upload the FAISS index, solving the classic serverless "overwrite" race condition.
+- **Event Decoupling & Resiliency:** Inserted an SQS polling layer between S3 and Lambda. During high-volume ingestion, text chunking can easily overwhelm Bedrock's embedding API limits. SQS gracefully catches `ThrottlingExceptions` and applies an automated backoff-and-retry mechanism, ensuring the pipeline self-heals without manual intervention.
+- **FinOps Optimization:** Opted for a serverless S3/FAISS architecture over Amazon OpenSearch Serverless, completely eliminating hourly idle database costs.
+- **Metadata Filtering:** Implemented source-level tagging during ingestion, allowing the UI to dynamically restrict the LLM's search space to user-selected documents, ensuring perfect data provenance.
+- **Stateless Merging:** Designed the ingestion Lambda to intelligently download, merge, and re-upload the FAISS index, solving the classic serverless "overwrite" race condition.
+ 
+## 🚀 Enterprise Scaling & Day-Two Operations Roadmap
+This architecture is intentionally designed as a lightweight, scale-to-zero Proof of Concept. For a production-grade deployment serving a global enterprise, I would introduce the following enhancements:
+
+* **Managed Vector Database (Amazon OpenSearch Serverless):** Migrating from the stateless S3 FAISS index to OpenSearch as the document corpus scales into the millions. This unlocks advanced hybrid search capabilities (lexical + semantic) and allows for fine-grained, document-level Role-Based Access Control (RBAC).
+* **Automated Alerting (Amazon SNS):** Attaching an SNS topic to the SQS Dead Letter Queue (DLQ). Instead of relying on manual CloudWatch log audits, administrators would receive real-time email or Slack notifications whenever a corrupted or password-protected PDF fails ingestion, enabling proactive support.
+
+
 
 ## 🛠️ Technology Stack
-- Cloud Provider: AWS (100% Serverless)
-- Infrastructure as Code (IaC): AWS Serverless Application Model (SAM)
-- AI/ML Frameworks: LangChain, Amazon Bedrock (Claude 3 Haiku, Titan V2), FAISS
-- Compute & API: AWS Lambda (Python 3.11), Amazon API Gateway, Amazon S3
-- Frontend: Streamlit, Boto3
-- Dependency Management: Poetry
+- **Cloud Provider:** AWS (100% Serverless)
+- **Infrastructure as Code (IaC):** AWS Serverless Application Model (SAM)
+- **AI/ML Frameworks:** LangChain, Amazon Bedrock (Claude 3 Haiku, Titan V2), FAISS
+- **Compute, Storage & Messaging:** AWS Lambda (Python 3.11), Amazon API Gateway, Amazon S3, Amazon SQS (Main Queue & DLQ)
+- **Frontend:** Streamlit, Boto3
+- **Dependency Management:** Poetry
 
 ## 📂 Repository Structure
 
@@ -67,6 +76,15 @@ When a geological report is uploaded to the raw data bucket, an AWS Lambda funct
 | :--- | :--- |
 | ![S3 Uploaded Files](docs/screenshot_s3_bucket.png) | ![S3 Index Folder](docs/screenshot_index_folder.png) |
 *Left: The raw WAMEX PDF reports. Right: The persistent FAISS vector store generated by the ingestion pipeline.*
+
+#### ⚡ Performance & Observability
+This architecture is highly optimized for cost and speed. Below is a snapshot of the AWS CloudWatch logs demonstrating the event-driven Lambda function successfully processing a geological report, generating Bedrock embeddings, and merging the FAISS index.
+
+![CloudWatch Execution Logs](docs/screenshot_cloudwatch_logs.png)
+
+* **Execution Speed:** Takes under 5 seconds to fully chunk, embed, and index a document.
+* **Lean Compute:** Max memory used is ~203 MB, keeping the serverless footprint incredibly cost-effective.
+* **Resiliency:** The SQS integration successfully catches Bedrock API rate limits (`ThrottlingException`) and automatically redrives the message, ensuring zero data loss during high-volume uploads.
 
 ### Phase 2: Retrieval & Generation
 The Streamlit frontend allows users to interact with the grounded AI assistant. The sidebar provides a "NotebookLM-style" interface for dynamic document selection.
