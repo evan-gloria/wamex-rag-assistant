@@ -1,0 +1,128 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  wamex-rag-assistant
+  True serverless RAG architecture for WAMEX geological reports using FAISS, S3, and Bedrock. Cost: Zero idle compute.
+
+Globals:
+  Function:
+    Timeout: 300
+    MemorySize: 1024
+    Runtime: python3.11
+    Architectures:
+      - arm64
+
+Resources:
+  RawWamexBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: IngestionQueuePolicy
+    Properties:
+      BucketName: !Sub "wamex-raw-pdfs-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      NotificationConfiguration:
+        QueueConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Queue: !GetAtt IngestionQueue.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: .pdf
+
+  # --- PHASE 1: DATA INGESTION ---
+  IngestionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/ingestion/
+      Handler: app.lambda_handler
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref RawWamexBucket
+        - SQSPollerPolicy:
+            QueueName: !GetAtt IngestionQueue.QueueName
+        - S3CrudPolicy:
+            BucketName: !Sub "wamex-raw-pdfs-${AWS::AccountId}-${AWS::Region}"
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt IngestionQueue.Arn
+            BatchSize: 1 # Keep it at 1 for this PoC to avoid complex partial batch failures
+
+  # --- PHASE 2: RAG API & RETRIEVAL ---
+  QueryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/api/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          # Passes the dynamically generated bucket name to the Python code
+          S3_BUCKET_NAME: !Ref RawWamexBucket
+      Policies:
+        # The query function only needs to read the index files, not write
+        - S3ReadPolicy:
+            BucketName: !Sub "wamex-raw-pdfs-${AWS::AccountId}-${AWS::Region}"
+        - Statement:
+            # Block 1: Bedrock Invocation (Strictly scoped to the models)
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              # Needs access to BOTH Titan (embeddings) and Claude 3 Haiku (generation)
+              Resource: 
+                - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
+                - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0"
+            # Block 2: Marketplace Verification (Must be wildcarded)
+            - Effect: Allow
+              Action:
+                - aws-marketplace:ViewSubscriptions
+                - aws-marketplace:Subscribe
+              Resource: "*"
+      Events:
+        ApiEvent:
+          Type: HttpApi
+          Properties:
+            Path: /query
+            Method: POST
+  # --- DLQ and the Main Queue ---         
+  IngestionDLQ:
+    Type: AWS::SQS::Queue
+
+  IngestionQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 900 # Must be greater than or equal to the Lambda timeout
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt IngestionDLQ.Arn
+        maxReceiveCount: 3 # Sends to DLQ after 3 failed attempts
+  
+  IngestionQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: 
+        - !Ref IngestionQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt IngestionQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub "arn:aws:s3:::wamex-raw-pdfs-${AWS::AccountId}-${AWS::Region}"
+# --- NEW: Prints your public API URL to the terminal ---
+Outputs:
+  RagApiUrl:
+    Description: "API Gateway endpoint URL for POST requests"
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/query"
