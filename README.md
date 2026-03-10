@@ -34,7 +34,7 @@ When a geological report is uploaded to the raw data bucket, an AWS Lambda funct
 * **Frontend:** A pure Python Streamlit application provides a conversational interface alongside a dynamic sidebar for document selection (Metadata Filtering).
 * **API Layer:** An Amazon API Gateway exposes a secure, RESTful `POST` endpoint to bridge the Streamlit UI with the backend.
 * **Vector Similarity Search:** A Querying AWS Lambda function pulls the persistent FAISS index from S3, filters the search space based on user selections, and retrieves the most relevant chunks.
-* **Grounded Synthesis:** The Lambda constructs an augmented prompt and streams it to Amazon Bedrock (Anthropic Claude 3 Haiku) to generate a hallucination-free geological insight.
+* **Grounded Synthesis:** The Lambda constructs an augmented prompt and streams it to Amazon Bedrock (Anthropic Claude 4.5 Haiku) to generate a hallucination-free geological insight.
 
 | Streamlit UI Main Chat | Dynamic Sidebar Selection |
 | :--- | :--- |
@@ -55,11 +55,17 @@ When a geological report is uploaded to the raw data bucket, an AWS Lambda funct
 
 ---
 
+## 🏗️ Architecture Updates & Changelog
+
+* **March 2026 - Proactive Model Migration (Claude Haiku 4.5):** Successfully migrated the core LLM processing engine from Claude 3 Haiku to the latest **Claude Haiku 4.5** (`anthropic.claude-haiku-4-5-20251001-v1:0`) via Amazon Bedrock in response to an AWS deprecation notice. This upgrade delivers next-generation reasoning capabilities and faster document parsing for the WAMEX geological reports, while strictly maintaining the original $0.00 scale-to-zero FinOps footprint.
+
+---
+
 ## 🛡️ Enterprise Security & Scaling Roadmap
 
 **Security Posture Built-In:**
 * **IAM Least Privilege:** The Query Lambda possesses strictly Read-Only access to the S3 FAISS index and Amazon Bedrock.
-* **Context Bounding:** The system prompt securely anchors the Claude 3 Haiku model to the retrieved context, rejecting out-of-domain prompt injections.
+* **Context Bounding:** The system prompt securely anchors the Claude 4.5 Haiku model to the retrieved context, rejecting out-of-domain prompt injections.
 * **Frontend Sanitization:** Streamlit natively escapes HTML/JS inputs, neutralizing XSS attempts.
 
 **Day-Two Operations Roadmap:**
@@ -72,7 +78,7 @@ For a production-grade enterprise deployment, I would introduce:
 ## 🛠️ Technology Stack
 * **Cloud Provider:** AWS (100% Serverless)
 * **IaC:** AWS Serverless Application Model (SAM)
-* **AI/ML:** LangChain, Amazon Bedrock (Claude 3 Haiku, Titan V2), FAISS
+* **AI/ML:** LangChain, Amazon Bedrock (Claude 4.5 Haiku, Titan V2), FAISS
 * **Compute & Messaging:** AWS Lambda (Python 3.11 / ARM64), API Gateway, Amazon S3, Amazon SQS
 * **Frontend:** Streamlit, Boto3
 * **Dependency Management:** Poetry
@@ -84,7 +90,7 @@ wamex-rag-assistant/
 ├── frontend/
 │   └── app.py            # Streamlit UI with S3 dynamic sidebar
 ├── src/
-│   ├── api/              # AWS Lambda: API Gateway integration & Claude 3 generation
+│   ├── api/              # AWS Lambda: API Gateway integration & Claude 4.5 generation
 │   └── ingestion/        # AWS Lambda: S3 event trigger, parsing, & FAISS merging
 ├── docs/                 # Infrastructure setup and deployment playbooks
 ├── pyproject.toml        # Poetry dependency management

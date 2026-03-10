@@ -20,9 +20,9 @@ bedrock_client = boto3.client('bedrock-runtime')
 BUCKET_NAME = os.environ.get('S3_BUCKET_NAME')
 
 # Initialize Bedrock Models
-# We use Titan for embeddings (to match the ingestion phase) and Claude 3 Haiku for fast, cheap generation
+# We use Titan for embeddings (to match the ingestion phase) and Claude 4.5 Haiku for fast, cheap generation
 embeddings = BedrockEmbeddings(client=bedrock_client, model_id="amazon.titan-embed-text-v2:0")
-llm = ChatBedrock(client=bedrock_client, model_id="anthropic.claude-3-haiku-20240307-v1:0")
+llm = ChatBedrock(client=bedrock_client, model_id="anthropic.claude-haiku-4-5-20251001-v1:0")
 
 def download_index_from_s3():
     """Helper function to pull the FAISS vectors from S3 to ephemeral storage"""
